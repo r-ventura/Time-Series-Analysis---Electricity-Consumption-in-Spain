@@ -1,0 +1,1003 @@
+---
+title: "AD-TS: ConsumElec"
+output: html_document
+date: "2023-04-13"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)
+library(zoo)
+setwd("/Users/adriancerezuelahernandez/Desktop/Q4/AD/SerTemp/Projecte")
+```
+
+```{r}
+ser=ts(read.table("/Users/adriancerezuelahernandez/Desktop/Q4/AD/SerTemp/Repositori de series temporals/ConsumElec.dat"),start=1990,freq=12)
+```
+
+```{r}
+autoplot.zoo(as.zoo(ser), facets=NULL) + aes(colour = NULL, linetype = NULL) + facet_free() + ggtitle("Consumo de electricidad(energía final) en España") + xlab("Tiempo") + ylab("GwH") + geom_point()
+```
+
+```{r}
+m <- apply(matrix(ser,nrow=12),2,mean)
+v <- apply(matrix(ser,nrow=12),2,var)
+plot(v~m)
+boxplot(ser~floor(time(ser)))
+```
+La varianza no es constante, será necesario aplicar logaritmos a la serie.
+
+```{r}
+lnser = log(ser)
+
+autoplot.zoo(as.zoo(lnser), facets=NULL) + aes(colour = NULL, linetype = NULL) + facet_free() + ggtitle("Consumo de electricidad(energía final) en España") + xlab("Tiempo") + ylab("GwH(log)") + geom_point()
+```
+Realizando de nuevo el análisis de la varianza para la serie transformada
+
+```{r}
+m <- apply(matrix(lnser,nrow=12),2,mean)
+v <- apply(matrix(lnser,nrow=12),2,var)
+plot(v~m)
+boxplot(lnser~floor(time(lnser)))
+```
+Ahora se ve que se ha homogenizado la varianza, y es constante. En el boxplot se puede observar también la presencia de algunas observaciones atípicas, las cuales serán tratadas adecuadamente más tarde.
+
+Análisi del patrón estacional
+
+```{r}
+monthplot(lnser)
+ts.plot(matrix(lnser,nrow=12),type="o",col=1:8)
+```
+Subidas de consumo en meses centrales como Enero y Julio, la serie presenta un patrón estacional.
+Será necesario aplicar una diferenciación estacional, y trabajar con un incremento de la estación o mes respecto del año anterior.
+
+```{r}
+d12lnser = diff(lnser,lag=12)
+plot(d12lnser)
+abline(h=0,col=2)
+```
+Claramente, a través del gráfico de la serie se puede ver como la media no es constante. Por tanto, será necesario aplicar tantas diferenciaciones regulares como sea necesario con tal de corregirla.
+Una vez se pueda considerar que es prácticamente constante, deberá verse qué diferenciación es la que da una mejor relación entre mantener la media constante y no aumentar la varianza en exceso.
+
+```{r}
+d1d12lnser = diff(d12lnser)
+plot(d1d12lnser)
+abline(h=0,col=2)
+```
+
+```{r}
+d1d1d12lnser = diff(d1d12lnser)
+plot(d1d1d12lnser)
+abline(h=0,col=2)
+```
+
+```{r}
+var(lnser)
+var(d12lnser)
+var(d1d12lnser)
+var(d1d1d12lnser)
+```
+La varianza de la serie tras la última diferenciación regular ha aumentado considerablemente. Tras aplicar una sola diferenciación regular también aumenta la varianza, pero es un aumento mínimo, por lo que se puede tomar a costa de hacer constante la media. Por tanto, la última diferenciación regular no se tendrá en cuenta y, tras realizar las transformaciones, se trabajará con la serie estacionaria $W_t$, que es de la forma \[W_t = (1-B)(1-B^{12})log(X_t)\]
+
+A continuación, se presentará el ACF (Auto-Correlation Function) y el PACF(Partial Auto-Correlation Function) de la serie transformada, con el fin de decidir cuáles serán los parámetros de los modelos a presentar. 
+
+```{r}
+acf(ser,ylim=c(-1,1),lag.max = 72) #Para ver que la serie original no es estacionaria
+```
+```{r}
+par(mfrow=c(1,2))
+acf(d1d12lnser, ylim=c(-1,1), lwd=2, lag.max=72,col=c(2,rep(1,11)))
+pacf(d1d12lnser, ylim=c(-1,1), lwd=2, lag.max=72, col=c(rep(1,11),2))
+par(mfrow=c(1,1))
+```
+  - Parte estacional: MA(1) estacional. Para el PACF se observan dos retardos significativos. Después del tercero tenemos dos significativos, pero como sobresalen por poco de las bandas de confianza, se considerarán valores aleatorios fruto del azar, y el modelo que tomaremos será un AR(2) estacional.
+  
+  - Parte regular: En el ACF encontramos tres retardos significativos. Los posteriores, como antes, se consideraran fruto del azar, considerando también que están muy lejos del inicio. Se considerará un MA(3) regular en este caso. Para el PACF se observan cinco u ocho retardos significativos, según si consideramos los últimos dos valores aleatorios. En un principio se propondrá un AR(8) regular, con la opción de poder reducir los parámetros más tarde en la estimación.
+  
+### ESTIMACIÓN
+  
+Combinando las opciones consideradas, y teniendo en cuenta que previamente se ha aplicado una diferenciación regular y una estacional, los modelos iniciales propuestos serían los siguientes:
+\[ARIMA(0,1,3)(0,1,1)_{12}\] \[ARIMA(0,1,3)(2,1,0)_{12}\]
+\[ARIMA(8,1,0)(0,1,1)_{12}\] \[ARIMA(8,1,0)(2,1,0)_{12}\]
+
+De cara a la estimación de modelos se tomarán los dos modelos con un MA(1) estacional.
+
+```{r}
+(mod1 <- arima(d1d12lnser, order=c(0,0,3), seasonal=list(order=c(0,0,1),period=12)))
+```
+Es preferible que la media estimada de la serie transformada no sea significativamente diferente de 0, indicador de que la serie transformada está centrada alrededor de 0. Según el ratio del intercept dado por el modelo ajustado, es el caso. De este modo, se toma la serie sin diferenciaciones, ni regular ni estacional, y se ajustan con el modelo a continuación.
+
+```{r}
+(mod1 <- arima(lnser, order=c(0,1,3), seasonal=list(order=c(0,1,1),period=12)))
+```
+Si hacemos el test de t-ratios para cada coeficiente se podrá comprobar si es conveniente rechazar alguno y establecerlo a 0 en el modelo.
+
+```{r}
+cat("\nT-ratios", round(mod1$coef/sqrt(diag(mod1$var.coef)),2))
+```
+
+Según el test realizado, los coeficientes $ma2$ y $ma3$, tienen un valor absoluto menor que dos. Por tanto, deben fijarse a 0 en el modelo a continuación. No obstante, $ma2$ es dudoso, pues la diferencia con el valor umbral es muy poca, por lo que puede ser preferible mantenerlo en el modelo. De hecho, si comprobáramos el AIC del modelo fijando este parámetro a 0, el resultado sería un modelo peor que el planteado a continuación.
+
+```{r}
+(mod1 <- arima(lnser, order=c(0,1,3), seasonal=list(order=c(0,1,1),period=12),fixed=c(NA,NA,0,NA)))
+```
+Se puede ver como la mejora después de fijar los dos parámetros es muy ligera, prácticamente mínima, respecto al modelo completo.
+
+```{r}
+cat("\nT-ratios", round(mod1$coef/sqrt(diag(mod1$var.coef)),2))
+```
+
+Al volver a calcular los ratios de cada coeficiente, para comprobar si se ven afectados, se comprueba que todos siguen siendo significativos, por lo que no se podrá fijar a 0 ningún otro.
+
+Una vez estimado el primer modelo, a continuación se estima el segundo, el cual contiene un AR(8) regular en este caso.
+
+```{r}
+(mod2 <- arima(d1d12lnser, order=c(8,0,0), seasonal=list(order=c(0,0,1),period=12)))
+```
+Igual que para el modelo anterior, el ratio del intercept es menor que |2|, por lo que la media no es significativamente diferente, y se toma la serie sin diferenciaciones previas realizadas, ajustándolas con el propio modelo.
+
+```{r}
+(mod2 <- arima(lnser, order=c(8,1,0), seasonal=list(order=c(0,1,1),period=12)))
+```
+Si hacemos el test de t-ratios para cada coeficiente se podrá comprobar si es conveniente rechazar alguno y establecerlo a 0 en el modelo.
+
+```{r}
+cat("\nT-ratios", round(mod2$coef/sqrt(diag(mod2$var.coef)),2))
+```
+
+Todos ellos están por encima de 2, en valor absoluto. Por lo tanto, ningún coeficiente del modelo deberá ser fijado a 0.
+
+
+
+### VALIDACIÓN
+
+En primer lugar, se comprobará a través del ACF y PACF de los residuos, que todas las observaciones caen dentro de las bandas de confianza, tal como se espera que lo hagan.
+
+```{r}
+resi=resid(mod1)
+par(mfrow=c(1,2))
+acf(resi,ylim=c(-1,1),lag.max=72,col=c(2,rep(1,11)),lwd=2)
+pacf(resi,ylim=c(-1,1),lag.max=72,col=c(2,rep(1,11)),lwd=2)
+par(mfrow=c(1,1))
+```
+
+```{r}
+plot(resi)
+abline(h=0)
+abline(h=c(-3*sd(resi),3*sd(resi)),lty=3,col=c(1))
+```
+Tal como se esperaba, todas las observaciones, a excepción de un par en el PACF, caen dentro de las bandas de confianza. El mencionado retardo que se sale de estas, lo hace por muy poco y podría considerarse un valor aleatorio fruto del azar.
+
+Al realizar una primera exploración de los residuos del primer modelo, se observa que, sin tener en cuenta el claro pico pronunciado, y un segundo pico que se sale de las bandas de confianza, que aparecen entre los años 1990 y 1995, la variabilidad es similar para toda la serie. Por lo tanto, se puede concluir que este no es un caso de varianza no constante producida por una alta volatilidad en los datos, sino de la presencia de observaciones atípicas.
+
+De todas maneras, otra representación gráfica que puede ayudar a decidir frente a qué situación nos encontramos es el scatterplot de la raíz cuadrada del valor absoluto de los residuos.
+
+```{r}
+scatter.smooth(sqrt(abs(resi)),lpars=list(col=2))
+```
+Vemos que, globalmente, la línea roja es horizontal y los residuos se distribuyen de manera homogénea alrededor de ella, a excepción de algunas observaciones atípicas, que tal como se había visto en el anterior gráfico, se sitúan entre 1990 y 1995. Por lo tanto, la conclusión es la misma, la variancia de los residuos es constante.
+
+A continuación se estudiará su normalidad. En primer lugar, el gráfico de normalidad de los residuos es el siguiente:
+
+```{r}
+qqnorm(resi)
+qqline(resi,col=2,lwd=2)
+```
+Se observa como en los extremos aparecen colas que se alejan de la recta, pero no lo suficiente como para estar hablando de volatilidad. Son debidas a la ya mencionada presencia de atípicos. Se puede suponer, de momento, que se cumple la hipótesi de normalidad.
+
+Mediante el histograma con la curva normal superpuesta y el test de Shapiro-Wilks se comprobará esta suposición.
+
+```{r}
+hist(resi,breaks=20,freq=FALSE)
+curve(dnorm(x,mean=mean(resi),sd=sd(resi)),col=2,add=T)
+shapiro.test(resi)
+```
+Todo y ser el histograma únicamente un gráfico ilustrativo, se puede ver que a priori se debería de cumplir la hipótesis de normalidad. En cuanto al test de Shaprio-Wilks, el p-value tiene un valor de 0.0006275, que es inferior a 0.05 y por tanto rechaza la hipotesis nula, concluyendo así que no se puede garantizar que se cumpla la hipótesis de normalidad para los residuos del modelo. 
+
+Para finalizar el análisis, se estudiará la independencia de estos y si se trata o no de ruido blanco, a través del test de Ljung-Box.
+
+```{r}
+tsdiag(mod1,gof.lag=72)
+```
+Para que se pueda hablar de independencia y ruido blanco, todas las observaciones en el último gráfico deberían quedar por encima de la línea discontinua de color azul. Se puede ver como es el caso, por tanto no se rechaza la hipótesis y concluimos que el modelo $mod1$ explica suficientemente bien nuestros datos.
+
+A continuación, se seguirá el mismo procedimiento para el segundo modelo propuesto, empezando, de nuevo, por comprobar que las observaciones en el ACF y PACF caigan dentro de las bandas de confianza
+
+```{r}
+resi=resid(mod2)
+par(mfrow=c(1,2))
+acf(resi,ylim=c(-1,1),lag.max=72,col=c(2,rep(1,11)),lwd=2)
+pacf(resi,ylim=c(-1,1),lag.max=72,col=c(2,rep(1,11)),lwd=2)
+par(mfrow=c(1,1))
+```
+```{r}
+plot(resi)
+abline(h=0)
+abline(h=c(-3*sd(resi),3*sd(resi)),lty=3,col=c(1))
+```
+Se puede ver como tanto el ACF y PACF, como el gráfico que permite realizar una primera exploración de los residuos, son muy similares a los mostrados para el primer modelo, por lo cual se pueden sacar las mismas conclusiones: no es un caso de varianza no constante producidad por una alta volatilidad en los datos, sino de la presencia de observaciones atípicas.
+
+```{r}
+scatter.smooth(sqrt(abs(resi)),lpars=list(col=2))
+```
+El mismo caso tenemos con el scatterplot de la raíz cuadrada del valor absoluto de los residuos, es muy similar al anterior. Por lo tanto, la conclusión es la misma, la variancia de los residuos es constante.
+
+```{r}
+qqnorm(resi)
+qqline(resi,col=2,lwd=2)
+```
+```{r}
+hist(resi,breaks=20,freq=FALSE)
+curve(dnorm(x,mean=mean(resi),sd=sd(resi)),col=2,add=T)
+shapiro.test(resi)
+```
+En el caso del estudio de la normalidad, en este caso tampoco se puede garantizar que se cumpla. El gráfico de normalidad de los residuos muestra como forman esa línea recta esperada, a excepción de las colas en los extremos por la presencia de atípicos. Mientras tanto, una vez más, el test de Shapiro-Wilks tiene un p-value por debajo de 0.05, de modo que se rechaza la hipótesis nula de que los residuos cumplan normalidad.
+
+Para finalizar el análisis, se estudiará la independencia de estos y si se trata o no de ruido blanco, a través del test de Ljung-Box.
+
+```{r}
+tsdiag(mod2,gof.lag=72)
+```
+Igual que anteriormente, se puede hablar de ruido blanco e independencia en las observaciones. En este caso, tal como se puede observar en el tercer gráfico, todas están muy alejadas de la línea discontinua, hecho que prueba que los resultados de este test son aún mejores que los del primer modelo. Por tanto, se puede concluir que $mod2$ también es un modelo que explica suficientemente bien nuestros datos.
+
+### CAUSALIDAD E INVERTIBILIDAD
+
+A continuación se estudiará la causalidad e invertibilidad del modelo, pero antes se debe tener en cuenta que se decidirán dichas cualidades en función de si se trabaja con la parte MA o AR del modelo. Se dará por hecho que no hay ningún problema si todos los puntos (raíces del polinomio) caen dentro del circulo unidad.
+
+```{r}
+library(forecast)
+plot(mod1)
+```
+
+Se observa que todos los puntos caen en el centro del círculo unidad, así que no vemos ningún indicio de que haya ningun problema. 
+
+Se prosigue el estudio con el análisis de la invertibilidad. Se necesitarán únicamente las raíces complejas del polinomio resultante, si los módulos de dichas raíces son mayores que 1 (>1) se podrá garantizar la invertibilidad.
+
+```{r}
+polyroot(c(1,mod1$model$theta))
+print("Raíces del polinomio característico")
+Mod(polyroot(c(1,mod1$model$theta)))
+```
+Se concluye que se puede garantizar que el modelo es invertible, debido a que se cumple el requisito anteriormente mencionado.
+
+Para el estudio de la causalidad, los módulos de las raíces deberán de, nuevamente, ser mayores que 1 (>1) para afirmar que el modelo en cuestión sea causal.
+
+```{r}
+polyroot(c(1,mod1$model$phi))
+print("Raíces del polinomio característico")
+Mod(polyroot(c(1,-mod1$model$phi)))
+```
+
+Dada la salida, se puede ver como no tiene polinomio característico, al tratarse de un modelo MA, tanto estacional como regular. Por tanto, se concluye que el modelo es también causal.
+
+Seguidamente se procede a encontrar la expresión del modelo como AR y MA infinitos. Los coeficientes devueltos por la función $ARMAtoMA()$ representan sus términos, y describen cómo los errores de predicción anteriores se utilizan para hacer predicciones futuras. Cada coeficiente representa el efecto de un error de predicción específico en la predicción actual.
+
+```{r}
+##Pesos Pi (AR infinit)
+(pis=-ARMAtoMA(ar=-mod1$model$theta,ma=-mod1$model$phi,lag.max=36))
+```
+La salida muestra los coeficientes del modelo expresado como un AR infinito. Para determinar si es estacionario y/o invertible, deben examinarse estos. Será estacionario si y solo si la suma de los coeficientes al cuadrado converge a un valor finito. Si la suma diverge, entonces no será estacionario. De igual manera se comprueba la invertibilidad del mismo, solo que la suma en este caso es de los coeficientes en valor absoluto. De igual manera, será invertible si esta converge. Si el resultado fuera infinito, en cualquiera de los dos casos, sería necesario tomar medidas con tal de arreglar este problema. 
+
+```{r}
+sum(pis^2)
+sum(abs(pis))
+```
+
+Las dos sumas convergen, se puede afirmar pues que el modelo expresado como AR infinito es estacionario e invertible
+
+```{r}
+##Pesos Psi (MA infinit)
+(psis=ARMAtoMA(ar=mod1$model$phi,ma=mod1$model$theta,lag.max=36))
+```
+Procediendo de igual manera para un MA infinito, los coeficientes del modelo expresado como tal son los que se muestran a la salida. Se comprueban, también de igual manera, la estacionariedad e invertibilidad del mismo.
+
+```{r}
+sum(psis^2)
+sum(abs(psis))
+```
+
+Las dos sumas convergen a un valor finito. Por tanto, se puede concluir que el modelo será estacionario e invertible, tanto expresado como un AR infinito, como expresado como un MA infinito.
+
+En cuanto a las medidas de adecuación, se analizan los criterios AIC y BIC, que explican cuán bueno es el ajuste del modelo.
+
+```{r}
+print(c("AIC del modelo 1:",mod1$aic))
+print(c("BIC del modelo 1:",BIC(mod1)))
+```
+
+De la misma manera que se ha procedido con el primer modelo, $mod1$, se estudiará también la invertiblidad, causalidad, expresión como AR y MA infinitos, y medidas de adecuación del segundo modelo, $mod2$.
+
+Se comenzará, en primer lugar, con la comprobación de que todas las raíces del modelo caigan dentro del círculo unidad.
+
+```{r}
+plot(mod2)
+```
+
+Vemos nuevamente que todos los puntos caen en el centro del círculo unidad, así que no vemos ningún indicio de que haya ningun problema. 
+
+Se prosigue el estudio con el análisis de la invertibilidad y causalidad.
+
+```{r}
+polyroot(c(1,mod2$model$theta))
+print("Raíces del polinomio característico")
+Mod(polyroot(c(1,mod2$model$theta)))
+```
+```{r}
+polyroot(c(1,mod2$model$phi))
+print("Raíces del polinomio característico")
+Mod(polyroot(c(1,-mod2$model$phi)))
+```
+Se observa que, de la misma manera que para el primer modelo, todos los módulos son de valor superior a 1, tanto en el caso de las phis como en el de las thetas, por lo tanto se concluye que el segundo modelo es invertible y causal.
+
+Estudio de su estacionariedad e invertibilidad.
+La expresión de este segundo modelo como AR infinito tiene por coeficientes los siguientes:
+
+```{r}
+##Pesos Pi (AR infinit)
+(pis=-ARMAtoMA(ar=-mod2$model$theta,ma=-mod2$model$phi,lag.max=36))
+```
+Por otro lado, la expresión del modelo como MA infinito tiene por coeficientes los siguientes:
+
+```{r}
+##Pesos Psi (MA infinit)
+(psis=ARMAtoMA(ar=mod2$model$phi,ma=mod2$model$theta,lag.max=36))
+```
+Igual que para $mod1$, se deberán comprobar las sumas de los coeficientes, tanto de sus cuadrados como de sus valores absolutos, para poder estudiar si este es estacionario y/o invertible.
+
+```{r}
+sum(pis^2)
+sum(abs(pis))
+sum(psis^2)
+sum(abs(psis))
+```
+Los cuatro sumatorios convergen a números finitos. Por tanto, la conclusión es que este segundo modelo, al igual que el primero, es estacionario e invertible, tanto expresado como un AR infinito, como expresado como un MA infinito.
+
+En cuanto a las medidas de adecuación, se analizarán de nuevo los criterios AIC y BIC:
+
+```{r}
+print(c("AIC del modelo 2:",mod2$aic))
+print(c("BIC del modelo 2:",BIC(mod2)))
+```
+
+A modo de comparativa, se ha observado que ambos modelos son invertibles y causales, sin embargo las medidas de adecuación son ligeramente distintas:
+ - mod1: AIC = -1370.72, BIC = -1355.47
+ - mod2: AIC = -1366.37, BIC = -1328.26
+
+### VERIFICACIÓN DE ESTABILIDAD + CAPACIDAD DE PREVISION
+
+Se eliminan primero de todo las 12 últimas observaciones de la serie con la finalidad de estudiar y comparar la capacidad de predicción de ambos modelos.
+
+```{r}
+ultim=c(2017,12); 
+ser2=window(ser, end=ultim)
+```
+
+Una vez definida la nueva serie se ajustan ambos modelos a ésta.
+```{r}
+lnser2=log(ser2)
+d1d12lnser2=diff(diff(lnser2,12))
+
+(mod1_1 <- arima(d1d12lnser2, order=c(0,0,3), seasonal=list(order=c(0,0,1),period=12)))
+(mod1_1 <- arima(lnser2, order=c(0,1,3), seasonal=list(order=c(0,1,1),period=12)))
+cat("\nT-ratios", round(mod1_1$coef/sqrt(diag(mod1_1$var.coef)),2))
+
+(mod2_1 <- arima(d1d12lnser2, order=c(8,0,0), seasonal=list(order=c(0,0,1),period=12)))
+(mod2_1 <- arima(lnser2, order=c(8,1,0), seasonal=list(order=c(0,1,1),period=12)))
+cat("\nT-ratios", round(mod2_1$coef/sqrt(diag(mod2_1$var.coef)),2))
+```
+ 
+Escogemos los modelos estimados a partir de las diferenciaciones hechas manualmente y eliminamos aquellos coeficientes que tengan un valor inferior a 2 en valor absoluto en el test de t-ratios. Los valores dudosos, cercanos a este valor, se comprueba que el AIC del modelo aumenta en eliminarlos y, por tanto, no deben ser fijados a 0. Una vez fijado el único parámetro que lo requiere, se comprueba que los T-ratios están todos por encima de 2, en valor absoluto, y no se han visto afectados después de ello. 
+
+```{r}
+(mod1_1 <- arima(lnser2, order=c(0,1,3), seasonal=list(order=c(0,1,1),period=12),fixed=c(NA,NA,0,NA)))
+cat("\nT-ratios", round(mod1_1$coef/sqrt(diag(mod1_1$var.coef)),2))
+```
+
+```{r}
+rbind(coef(mod1),coef(mod1_1))
+```
+```{r}
+rbind(coef(mod2),coef(mod2_1))
+```
+Se concluye que, pese a eliminar las 12 últimas observaciones, los coeficientes de ambos modelos tienen tanto el mismo signo como un valor similar, de manera que son estables y podemos confiar en las predicciones de estos, ya que son similares a los originales.
+
+A continuación, a través de la función $accuracy()$ de la librería $forecast$ se evaluará la capacidad de previsión de ambos modelos, generando una predicción para los próximos 12 períodos a partir de los modelos ajustados con la serie recortada, y evaluando su precisión respecto a las observaciones originales.
+La salida es una tabla que contiene diferentes errores de predicción, tales como el MAPE o el MAE. Cuanto menor sean, mayor capacidad de previsión del modelo.
+
+```{r}
+# Generar predicciones del modelo para los próximos 12 períodos
+forecast_mod1 <- forecast(mod1_1, h = 12)
+
+# Evaluar la precisión de las predicciones respecto a las observaciones originales
+accuracy(forecast_mod1, lnser)
+```
+
+```{r}
+# Generar predicciones del modelo para los próximos 12 períodos
+forecast_mod2 <- forecast(mod2_1, h = 12)
+
+# Evaluar la precisión de las predicciones respecto a las observaciones originales
+accuracy(forecast_mod2, lnser)
+```
+
+A través de las tablas se puede observar como todas las medidas de error tienen valores similares para los dos modelos, siendo en algunas muy ligeramente superior el primer modelo, así como a la inversa en otras. De todos modos, las medidas de error tienen valores bajos para ambos modelos, así que se puede afirmar que ambos tendrán buena capacidad de previsión. Teniendo en cuenta también que son valores muy similares, se puede concluir que no será un factor determinante a la hora de escoger modelo, pues sea cual sea el elegido, la bondad de precisión no variará apenas de uno a otro.
+
+$\textbf{Selección de modelo}$
+
+El último paso en la validación de modelos es escoger con cuál de los dos ajustados se realizarán las predicciones. 
+En primer lugar, respecto al análisis de residuos, se ha podido observar cómo ambos tienen las mismas características: varianza constante, independencia y ruido blanco y, en ninguno de ellos se cumple la hipótesis de normalidad de residuos. Respecto al estudio de la invertibilidad, causalidad y estabilidad de los modelos, también se ha podido concluir que comparten estas características. Ambos son invertibles, estables y causales.
+Además de todo el parecido en estas características, se ha podido ver en el último análisis como su capacidad de predicción es muy similar. Por tanto, ninguno de estos rasgos será completamente determinante a la hora de decidir entre dos modelos. 
+En lo que sí hay diferencia entre ambos es en las medidas de adecuación. No es una diferencia abismal, pero teniendo en cuenta la importancia de estas, y que en todas las demás facetas son prácticamente iguales, será diferencial a la hora de escoger.
+
+ - mod1: AIC = -1370.72, BIC = -1355.47
+ - mod2: AIC = -1366.37, BIC = -1328.26
+ 
+```{r}
+(AIC1=AIC(mod1))
+(BIC1=BIC(mod1))
+```
+
+ 
+ Por tanto, el modelo escogido para llevar a cabo las predicciones será el primer modelo, $mod1$:
+ \[ARIMA(0,1,3)(0,1,1)_{12}\]
+
+### PREVISIONES
+
+Para el modelo ajustado sin las últimas 12 observaciones, obtenemos las predicciones puntuales, y el correspondiente intervalo de confianza al 95% para el último año. En ambas predicciones se grafican enventanadas desde el año 2015, de manera que pueda verse clara tanto la predicción como su intervalo de confianza. Graficando la serie completa no se ve de manera clara, pues los datos van desde el 1990 hasta el año que se está prediciendo.
+
+Sabemos que el intervalo de confianza del 95% corresponderá al valor predicho $\pm$ 1.96, que es el valor de la distribución normal que contiene el 95%, multiplicado por el error estándar.
+\[x_{pred} \pm 1.96 se\]
+
+Como en el modelo se ha ajustado en una escala logarítmica, de cara a predecir será necesario invertir la escala en la que se trabaja, de manera que con la función exponencial se recuperarán los valores originales de la serie .
+
+En primer lugar, las predicciones con la serie recortada sobre el último año observado en la serie original son las siguientes:
+
+```{r}
+(p1_1<-predict(mod1_1,n.ahead=12))
+(pr<-exp(p1_1$pred))
+ul <- exp(p1_1$pred+1.96*p1_1$se)
+ll <- exp(p1_1$pred-1.96*p1_1$se)
+ts.plot(ser,ll,ul,pr,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2015,2020), type="o"); abline(v=2012:2020,lty=3,col=4)
+```
+Se puede observar como la predicción, graficada en rojo, se encuentra dentro del intervalo de confianza, graficado en azul, y se ajusta de una manera precisa a las observaciones originales, graficadas en negro.
+
+Mientras que la predicción sobre la serie original a un año vista es la siguiente:
+
+```{r}
+(p1<-predict(mod1,n.ahead=12))
+(pr<-exp(p1$pred))
+ul <- exp(p1$pred+1.96*p1$se)
+ll <- exp(p1$pred-1.96*p1$se)
+ts.plot(ser,ll,ul,pr,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2015,2020), type="o"); abline(v=2012:2020,lty=3,col=4)
+```
+A continuación se obtienen las medidas de error RMSE, MAE, RMSPE y MAPE del modelo. Alguna de ellas ya ha sido mostrada anteriormente en la evaluación de la capacidad de previsión del modelo. 
+
+```{r}
+obs=window(ser,start=2017)
+pr<-exp(p1_1$pred)
+
+(RMSE1=sqrt(mean((obs-pr)^2)))
+(MAE1=mean(abs(obs-pr)))
+(RMSPE1=sqrt(mean(((obs-pr)/obs)^2)))
+(MAPE1=mean(abs(obs-pr)/obs))
+```
+```{r}
+(CI1=mean(ul-ll))
+```
+
+
+### EFECTOS DE CALENDARIO
+
+En las series temporales hay ciertas configuraciones en el mes que pueden afectar las predicciones, a eso se le conoce como efectos de calendario. Se considerarán dos casos principales: Semana Santa y la configuración de los días de la semana.
+
+El primero porque dependiendo del año, la Semana Santa puede caer en el mes de Marzo, en el mes de Abril, o en ambos, y eso podría no verse reflejado en las predicciones y que estas fallaran. Con tal de lidiar con este problema, se intentará cambiar la serie con tal de que la Semana Santa sea considerada la mitad de días para cada mes.
+
+El segundo porque según la proporcion de días laborables y fines de semana a lo largo de los meses de un año puede afectar también a las predicciones hechas sobre la serie. En este caso, se lidiará con el problema estableciendo la proporción de Trading Days/Weekends a 5/2 en todos los meses.
+
+```{r}
+source("CalendarEffects.r")
+```
+
+```{r}
+inici=c(1990,1,length(ser))
+(vEa=Weaster(inici))
+```
+En este listado se puede ver la repartición de los días de la Semana Santa entre Marzo y Abril para cada año. Se puede ver como, por ejemplo, en el año 1993 Abril posee el doble de días que Marzo para estas fechas (Marzo -0.5, Abril +0.5). Esto quiere decir que la Semana Santa cayó en Abril entera, por lo que en ese mes hay el doble de días respecto a la repartición deseada. 
+En cambio, se puede ver como en 1994 la repartición de días fue 5 días de Semana Santa en Marzo y 3 en Abril, es decir un 17% más en el primer mes de los dos, respecto a la repartición deseada. 
+Los años en que la proporción es $\pm$0, es porque están igualmente repartidos estos días entre los dos meses.
+
+```{r}
+(vTD=Wtrad(inici))
+```
+En el listado para los Trading Days se puede observar cuantos días laborables hay de más, o de menos, respecto a la proporción de 5/2 buscada. Se puede ver como en 1990, por ejemplo, hubo 3 días laborables más de los que tocarían respecto a esta partición, así como en 1993 hubo 4 días más de fin de semana respecto a ella. 
+
+A continuación, se ajustará un modelo para cada efecto de calendario, además de otro con ambos efectos juntos. De esta manera, se podrá estudiar su efecto respecto al modelo principal ajustado anteriormente:
+
+```{r}
+(mod1=arima(lnser,order=c(0,1,2),
+            seasonal=list(order=c(0,1,1),period=12)))
+```
+
+```{r}
+(mod1Ea=arima(lnser,order=c(0,1,2),
+            seasonal=list(order=c(0,1,1),period=12),
+            xreg=data.frame(vEa)))
+```
+
+```{r}
+(mod1TD=arima(lnser,order=c(0,1,2),
+              seasonal=list(order=c(0,1,1),period=12),
+              xreg=data.frame(vTD)))
+```
+
+```{r}
+(mod1EC=arima(lnser,order=c(0,1,2),
+              seasonal=list(order=c(0,1,1),period=12),
+              xreg=data.frame(vEa,vTD)))
+```
+Después de ajustar los tres modelos con efectos de calendario, se puede observar como a cada cual disminuye tanto el AIC como la varianza estimada. En este caso, el efecto causado por los Trading Days es prácticamente idéntico al causado por la Semana Santa, pero el efecto provocado por los dos juntos es aun mayor que los dos anteriores por separado. En este último modelo se puede ver como los ratios de las variables que contienen estos efectos (-3.23, 3.20) són mayores que 2, en valor absoluto, y, por tanto, significativos.
+
+```{r}
+cat("\nT-ratios", round(mod1EC$coef/sqrt(diag(mod1EC$var.coef)),2))
+```
+
+
+modelo ajustado para la Semana Santa: var. est: 0.0008777 ; AIC: -1380.54
+modelo ajustado para los Trading Days: var. est: 0.0008774 ; AIC: -1380.6
+modelo ajustado para los dos: var. est: 0.0008518 ; AIC: -1388.72
+
+Una vez estudiados los efectos de calendario sobre el modelo, es conveniente estudiar también el efecto de alguna circunstancia concreta a lo largo de los años que comprende la serie que pudiera haber causado cambios en esta. 
+
+Entre 1990 y 2018 destacan dos factores que pudieran tener efecto sobre la misma:
+  - La liberalización del mercado eléctrico de 1998, en búsqueda de una mayor competencia.
+  - La introducción del Plan de Acción de Energías Renovables en 2005, el cual se introdujo con objetivo de aumentar la proporción de energías renovables en el consumo eléctrico del país.
+
+Se ajustará un modelo añadiendo el efecto de estos, de tal manera que pueda verse si el efecto causado en la serie es suficientemente significativo como para ser considerado en este.
+
+
+```{r}
+vLib=ts(rep(0,length(ser)),start=1990,freq=12)
+window(vLib,start=c(1998,1))<-1
+# Inicio en enero de 1998 con la libre elegibilidad para los grandes consumidores de energía
+
+vPlan=ts(rep(0,length(ser)),start=1990,freq=12)
+window(vPlan,start=c(2005,8))<-1
+# Plan aprobado en agosto(8) de 2005
+```
+
+```{r}
+(mod1ECIA=arima(lnser,order=c(0,1,2),
+              seasonal=list(order=c(0,1,1),period=12),
+              xreg=data.frame(vEa,vTD,vLib,vPlan)))
+```
+```{r}
+cat("\nT-ratios", round(mod1ECIA$coef/sqrt(diag(mod1ECIA$var.coef)),2))
+```
+
+Después del ajuste realizado, se puede ver como, por un lado, el AIC de este último modelo es mayor que el del modelo que contiene solo efectos de calendario. Mientras que, por otro lado, al mostrar los ratios entre sus coeficientes y su error estándar, se concluye que no son parámetros influyentes, pues estos son menores que 2, en valor absoluto. 
+Pese a que después de un análisis exhaustivo de circunstancias que pudieran afectar al consumo eléctrico en España se hubieran encontrado los mencionados como factores principales, se concluye que estos no son significativamente distintos de 0 y, por tanto, no deben ser incluidos en el modelo. Su efecto asociado a la serie temporal no es diferencial a la hora de realizar buenas predicciones.
+
+Una vez queda seleccionado qué modelo se ajusta mejor a todos estos fenómenos, se realizará una comparativa de los valores de la serie original con los valores de la serie que contiene estos efectos.
+
+```{r}
+exp(coef(mod1EC)["vEa"])
+exp(coef(mod1EC)["vTD"])
+lnserEC=lnser-
+          coef(mod1EC)["vEa"]*vEa-
+          coef(mod1EC)["vTD"]*vTD
+```
+```{r}
+plot(lnser, xlab="Tiempo", ylab="GwH(log)", main="Comaparativa del logaritmo de la serie con y sin efectos de calendario aplicados")
+lines(lnserEC, col="red")
+abline(v=1985:2019,lty=3,col=4)
+```
+Una vez vista la comparativa, y visto que los efectos de calendario no cambian la serie, deberemos repetir todo el proceso de identificación, estimación y validación de un modelo que ajuste la nueva serie
+
+### Identificación
+
+En primer lugar se han de realizar las mismas diferenciaciones que con la serie, pues esta se comportará igual ante tales transformaciones. Es decir, una regular y una estacional.
+
+```{r}
+d1d12lnserEC=diff(diff(lnserEC,12))
+```
+
+```{r}
+par(mfrow=c(1,2))
+acf(d1d12lnserEC,ylim=c(-1,1),lag.max=72,col=c(2,rep(1,11)),lwd=2)
+pacf(d1d12lnserEC,ylim=c(-1,1),lag.max=72,col=c(rep(1,11),2),lwd=2)
+par(mfrow=c(1,1))
+```
+De la representación del ACF y PACF de la serie se extraerán los parámetros de los modelos candidatos y, al igual que con la serie original, se ajustarán dos para decidir cuál es el que mejor se ajusta a los datos.
+
+  - Parte estacional: Del ACF se pueden extraer dos retardos significativos. Por tanto, se planteará un MA(1) estacional. Por otro lado, para el PACF se observan también dos, el último que aparece en la representación se considera que es un valor fruto del azar. Pot tanto, se planteará un AR(2) estacional.
+  
+  - Parte regular: En el ACF se puede observar que el último retardo significativo es el tercero. Los posteriores, como antes, se considerarán fruto del azar. Se considerará un MA(3) regular. Por otro lado, para el PACF se pueden observar 8 retardos significativos, por lo que el modelo será un AR(8).
+  
+Tal como se ha comentado, se observan los mismos retardos significativos tanto para la parte regular como para la parte estacional que en los ACF y PACF de la serie estacionaria original. Por ende, los modelos a estimar serán los mismos. 
+Puesto que el modelo seleccionado anteriormente ha sido el que contiene un MA(2) regular y un MA(1) estacional, cabe esperar que este sea el de mejor ajuste. De todas maneras, se probará a estimar un $ARIMA(8,1,0)(0,1,1)_{12}$ con los efectos de calendario, para comprobar que el AIC del modelo es mayor y se ha de proseguir el análisis con el modelo ya ajustado
+
+```{r}
+(modECcand=arima(lnser,order=c(8,1,0),
+              seasonal=list(order=c(0,1,1),period=12),
+              xreg=data.frame(vEa,vTD)))
+cat("\nT-ratios", round(modECcand$coef/sqrt(diag(modECcand$var.coef)),2))
+modEC = mod1EC
+```
+Efectivamente, el AIC de este modelo es mayor que del ya ajustado previamente, que tenía AIC = -1388.72.
+
+### VALIDACIÓN
+Pese a ser el mismo modelo, se ha de analizar los residuos y comprobar que se cumplen las hipótesis de normalidad, varianza constante e independencia.
+
+Antes de comprobar estas hipótesis, se comprobara a través del ACF y PACF que estos caigan dentro de las bandas de confianza, como se espera que lo hagan.
+
+```{r}
+resi=resid(modEC)
+par(mfrow=c(1,2))
+acf(resi,ylim=c(-1,1),lag.max=72,col=c(2,rep(1,11)),lwd=2)
+pacf(resi,ylim=c(-1,1),lag.max=72,col=c(2,rep(1,11)),lwd=2)
+par(mfrow=c(1,1))
+```
+```{r}
+plot(resi)
+abline(h=0)
+abline(h=c(-3*sd(resi),3*sd(resi)),lty=3,col=c(1))
+```
+Tal como se esperaba todas la observaciones, o prácticamente todas, caen dentro de las bandas de confianza. Las que sobresalen por la mínima, se consideran valores fruto del azar.
+
+En la primera exploración se observa que la variabilidad e similar para la serie, sin contar el pico pronunciado previo al 1995. Por tanto, se espera que la varianza sea constante. Para reforzar esta hipótesis se realizará un scatterplot.
+
+```{r}
+scatter.smooth(sqrt(abs(resi)),lpars=list(col=2))
+```
+Los residuos se distribuyen homogéneamente alrededor de la línea roja, que es prácticamente horizontal. Se observan algunas observaciones atípicas, que serán tratadas en el siguiente apartado. La varianza de los residuos es constante.
+
+A continuación, se comprobará la normalidad de los residuos. En primer lugar, con el Normal Q-Q Plot.
+
+```{r}
+qqnorm(resi)
+qqline(resi,col=2,lwd=2)
+```
+No hay volatilidad, las colas en los extremos son de observaciones atípicas. Los valores se ajustan en una recta, por lo que de momento se cumple la hipótesis.
+El test que es determinante para concluir esto, es el de Shapiro-Wilks.
+
+```{r}
+hist(resi,breaks=20,freq=FALSE)
+curve(dnorm(x,mean=mean(resi),sd=sd(resi)),col=2,add=T)
+shapiro.test(resi)
+```
+El histograma es solo ilustrativo, el test da un p-valor inferior a 0.05, por lo que se rechaza la hipótesis de normalidad para los residuos del modelo.
+
+A través del test de Llung-Box se puede comprobar la independencia de estos, tal como se ha visto anteriormente.
+
+```{r}
+tsdiag(modEC,gof.lag=72)
+```
+Las observaciones son independientes y el ruido es blanco, todas se sitúan por encima de la línea discontínua azul.
+De este modo se concluye el análisis de los residuos, pudiendo afirmar que el modelo estimado explica suficientemente bien los datos.
+
+### Causalidad e invertibilidad
+
+El modelo será causal si y solo si, los módulos de las raíces del polinomio característico respecto a las phis son mayores que 1 (>1)
+
+```{r}
+Mod(polyroot(c(1,-modEC$model$phi)))
+```
+
+Como era de esperar, pues ya ha pasado con el modelo ajustado sobre la serie original transformada, no tiene polinomio característico respecto a la parte autoregresiva del mismo, al tratarse de un MA regular. Por tanto, el modelo es automáticamente causal.
+Por otra banda, el modelo será invertible si el módulo de las raíces del polinomio característico respecto a las thetas son mayores que 1 (>1)
+
+```{r}
+Mod(polyroot(c(1,modEC$model$theta)))
+```
+
+Efectivamente, es el caso y, por tanto, el modelo es también invertible.
+En cuanto a las medidas de adecuación del mismo, son las siguientes.
+
+```{r}
+(AIC2=AIC(modEC))
+(BIC2=BIC(modEC))
+```
+
+Tanto el AIC como el BIC de este modelo son menores que los del modelo sin efectos de calendario estimado anteriormente. 
+
+Como se está comprobando, el modelo tiene las mismas propiedades tanto para la serie original como para la que incluye efectos de calendario. Por consecuencia, también compartirá la estabilidad y la capacidad de previsión al enventanar la serie sin la última observación. De modo que se pasará directamente a las predicciones, tal como se ha hecho anteriormente.
+
+### Previsiones
+
+En primer lugar se retiran de la serie las últimas 12 observaciones, y se hace también un enventanado de las componentes que contienen los efectos de calendario, con tal de modelar también incluyéndolas.
+
+```{r}
+ultim=c(2017,12)
+ser2=window(ser, end=ultim)
+lnser2=log(ser2)
+vEa2=window(vEa,end=ultim)
+vTD2=window(vTD,end=ultim)
+```
+
+```{r}
+modEC
+(modEC2=arima(lnser2,order=c(0,1,3),
+            seasonal=list(order=c(0,1,1),period=12),
+            xreg=data.frame(vEa2,vTD2)))
+```
+```{r}
+vEa2=window(vEa,start=ultim+c(0,1))
+vTD2=window(vTD,start=ultim+c(0,1))
+```
+
+A continuación se realizarán las predicciones, con sus respectivos intervalos de confianza, tanto con el modelo original (entiéndase por original el modelo sin recortar las últimas observaciones) como con el último estimado.
+
+```{r}
+pre=predict(modEC2,n.ahead = 12,newxreg=data.frame(vEa2,vTD2))
+
+ll=exp(pre$pred-1.96*pre$se)
+pr=exp(pre$pred)
+ul=exp(pre$pred+1.96*pre$se)
+
+ts.plot(ser,ll,ul,pr,
+        lty=c(1,2,2,1),
+        col=c(1,4,4,2),
+        xlim=c(2016,2020), type="o")
+abline(v=2016:2020,lty=3,col=4)
+```
+La predicción de la serie modelada con $modEC2$, representada en rojo, se encuentra dentro de su intervalo de confianza, representado en azul, y se ajusta de una manera muy precisa al gráfico de la serie original, representado en negro.
+
+```{r}
+pre=predict(modEC,n.ahead = 12,newxreg=data.frame(vEa2,vTD2))
+
+ll=exp(pre$pred-1.96*pre$se)
+pr=exp(pre$pred)
+ul=exp(pre$pred+1.96*pre$se)
+
+ts.plot(ser,ll,ul,pr,
+        lty=c(1,2,2,1),
+        col=c(1,4,4,2),
+        xlim=c(2016,2020), type="o")
+abline(v=2016:2020,lty=3,col=4)
+```
+En este caso la representación es de la predicción de la serie a un año vista del final de la misma, modelada con los efectos de calendario incluidos, es decir mediante $modEC$. No se puede comprobar la precisión de esta previsión, pues no tenemos datos para ello, pero teniendo en cuenta el buen ajuste del gráfico anterior, se puede confiar en que la predicción será precisa.
+
+Una vez hechos los pronósticos, es necesario calcular las medidas de error del modelo, las cuales evalúan su capacidad de previsión, es decir, cuán buenas pueden ser las predicciones hechas.
+
+```{r}
+pre=predict(modEC2,n.ahead = 12,newxreg=data.frame(vEa2,vTD2))
+pr <- exp(pre$pred)
+obs=window(ser,start=2018)
+
+(RMSE2=sqrt(mean((obs-pr)^2)))
+(MAE2=mean(abs(obs-pr)))
+(RMSPE2=sqrt(mean(((obs-pr)/obs)^2)))
+(MAPE2=mean(abs(obs-pr)/obs))
+
+(CI2=mean(ul-ll))
+```
+
+
+### TRATAMIENTO DE OUTLIERS
+
+```{r}
+source("atipics2.r")
+```
+En primer lugar, se aplicará la detección automática de los datos atípicos.
+
+```{r}
+mod.atip=outdetec(modEC,dif=c(1,12),crit=2.8,LS=T)
+```
+
+```{r}
+atipics=mod.atip$atip[order(mod.atip$atip[,1]),]
+meses=c("Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic")
+data.frame(atipics,
+           Fecha=paste(meses[(atipics[,1]-1)%%12+1],start(lnser)[1]+((atipics[,1]-1)%/%12)),
+           PercVar=exp(atipics[,3])*100)
+```
+A través de la detección automática, se pueden detectar el tipo de outlier del que se trata (AO,TC o LS), en qué fecha se encuentran y otras medidas como: 
+  
+  - W_coeff: Se basa en la idea de que los valores atípicos tienden a tener un impacto mayor en la varianza de una serie temporal que los valores normales. El W_coeff se calcula como la relación entre la varianza de la serie temporal que se obtiene al retirar un punto de datos específico, y la varianza de la serie temporal original. Es decir, se calcula la varianza de la serie temporal sin el punto de datos, y se divide por la varianza de la serie temporal completa. Un valor de W_coeff mayor a 1 indica que el punto de datos en cuestión tiene un impacto mayor en la varianza de la serie temporal de lo que se esperaría de un valor normal. Por lo tanto, puede ser considerado como un valor atípico potencial en la serie temporal.
+  
+  - ABS_L_Ratio: Se define como la relación entre el valor absoluto de la diferencia entre un punto de datos y la mediana de la serie temporal, y la distancia intercuartil (IQR) de la serie temporal. Es decir, el Abs_L ratio mide qué tan lejos se encuentra un valor de la mediana de la serie temporal en términos de la variabilidad de la serie. Un valor de Abs_L ratio mayor a 3 se considera un valor atípico potencial en una serie temporal. 
+  
+  - PercVar: Indica la proporción de la varianza total de una serie temporal que es explicada por un modelo ajustado. Por ejemplo, si el PercVar es del 80%, significa que el 80% de la variabilidad de la serie temporal puede ser explicada por el modelo ajustado, mientras que el 20% restante representa la variabilidad que no puede ser explicada por el modelo.
+  
+Una vez detectados las observaciones atípicas, el tratamiento de estas se basa en linealizar la serie, con los efectos de calendario incluidos en ella.
+
+```{r}
+lnser.lin=lineal(lnser,mod.atip$atip)
+ser.lin=exp(lnser.lin)
+plot(ser)
+lines(exp(lnser.lin),col=2)
+```
+
+```{r}
+plot(lnser-lnser.lin)
+abline(h=0, col='red',lwd = 3,lty = 2)
+```
+
+```{r}
+lnserEC.lin=lnser.lin-
+  coef(modEC)["vEa"]*vEa-
+  coef(modEC)["vTD"]*vTD
+```
+
+Ajuste del modelo respecto a la serie linealizada con los efectos de calendario incluidos.
+
+```{r}
+d1d12lnserEC.lin=diff(diff(lnserEC.lin,12))
+plot(d1d12lnserEC.lin)
+abline(h=0)
+```
+```{r}
+par(mfrow=c(1,2))
+acf(d1d12lnserEC.lin,ylim=c(-1,1),lag.max=72,col=c(2,rep(1,11)),lwd=2)
+pacf(d1d12lnserEC.lin,ylim=c(-1,1),lag.max=72,col=c(rep(1,11),2),lwd=2)
+par(mfrow=c(1,1))
+```
+Estacional: MA(1), AR(2)
+Regular: MA(4), AR(5)
+De todas las combinaciones posibles, la que mejor se adecua a los datos, es decir, la que mejor AIC da, es la compuesta por un MA(1) estacional y un MA(4) regular
+
+```{r}
+(modEClin=arima(lnser.lin,order=c(0,1,4),
+              seasonal=list(order=c(0,1,1),period=12),
+              xreg=data.frame(vEa,vTD)))
+```
+```{r}
+cat("\nT-ratios", round(modEClin$coef/sqrt(diag(modEClin$var.coef)),2))
+```
+
+```{r}
+(modEClin=arima(lnser.lin,order=c(0,1,4),
+              seasonal=list(order=c(0,1,1),period=12), fixed=c(NA,NA,0,NA,NA,NA,NA),
+              xreg=data.frame(vEa,vTD)))
+```
+
+$\textbf{Análisis de los residuos de la serie linealizada.}$
+
+```{r}
+resi=resid(modEClin)
+
+plot(resi)
+abline(h=0)
+abline(h=c(-3*sd(resi),3*sd(resi)),lty=3,col=4)
+```
+```{r}
+par(mfrow=c(1,2))
+acf(resi,ylim=c(-1,1),lag.max=72,col=c(2,rep(1,11)),lwd=2)
+pacf(resi,ylim=c(-1,1),lag.max=72,col=c(rep(1,11),2),lwd=2)
+par(mfrow=c(1,1))
+```
+
+```{r}
+scatter.smooth(sqrt(abs(resi)), lpars=list(col=2))
+```
+```{r}
+qqnorm(resi)
+qqline(resi,col=2,lwd=2)
+```
+```{r}
+hist(resi,breaks=15, freq=FALSE)
+curve(dnorm(x, mean=mean(resi), sd=sd(resi)), col=2, lwd=2, add=T)
+shapiro.test(resi)
+```
+```{r}
+tsdiag(modEClin,gof.lag=72)
+```
+Hipótesis de varianza constante, normalidad e independencia residual comprobadas. El modelo queda validado y se puede utilizar para hacer predicciones.
+
+$\textbf{Medidas de error}$
+
+```{r}
+(AIC3=AIC(modEClin)+2*nrow(mod.atip$atip))
+(BIC3=BIC(modEClin)+log(length(ser)**nrow(mod.atip$atip)))
+```
+
+Más pequeños que cualquier modelo ajustado anteriormente.
+
+$\textbf{Causalidad e invertibilidad}$
+
+```{r}
+Mod(polyroot(c(1,-modEClin$model$phi)))
+```
+
+Todas las raíces por encima de 1 $\rightarrow$ el modelo es causal.
+
+```{r}
+Mod(polyroot(c(1,modEClin$model$theta)))
+```
+
+Todas las raíces por encima de 1 $\rightarrow$ el modelo es invertible
+
+$\textbf{Previsiones}$
+
+Recortamos las últimas 12 observaciones y predecimos, tal como hemos hecho con las anteriores.
+
+```{r}
+ultim=c(2017,12)
+ser.lin2=window(ser.lin, end=ultim)
+lnser.lin2=log(ser.lin2)
+vEa2=window(vEa,end=ultim)
+vTD2=window(vTD,end=ultim)
+```
+
+```{r}
+modEClin
+(modEClin2=arima(lnser.lin2,order=c(6,1,0),
+              seasonal=list(order=c(0,1,2),period=12),
+              xreg=data.frame(vEa2,vTD2)))
+```
+
+```{r}
+vEa2=window(vEa,start=ultim+c(0,1))
+vTD2=window(vTD,start=ultim+c(0,1))
+```
+
+```{r}
+pre=predict(modEClin2,n.ahead = 12,newxreg=data.frame(vEa2,vTD2))
+
+wLS=sum(mod.atip$atip[mod.atip$atip[,2]=="LS",3])
+
+ll=exp(pre$pred+wLS-1.96*pre$se)
+pr=exp(pre$pred+wLS)
+ul=exp(pre$pred+wLS+1.96*pre$se)
+
+ts.plot(ser,ll,ul,pr,
+        lty=c(1,2,2,1),
+        col=c(1,4,4,2),
+        xlim=c(2015,2020), type="o")
+abline(v=2015:2020,lty=3,col=4)
+```
+Ahora se predice con la serie original un año vista desde el final de la serie temporal.
+
+```{r}
+pre=predict(modEClin,n.ahead = 12,newxreg=data.frame(vEa2,vTD2))
+
+wLS=sum(mod.atip$atip[mod.atip$atip[,2]=="LS",3])
+
+ll=exp(pre$pred+wLS-1.96*pre$se)
+pr=exp(pre$pred+wLS)
+ul=exp(pre$pred+wLS+1.96*pre$se)
+
+ts.plot(ser,ll,ul,pr,
+        lty=c(1,2,2,1),
+        col=c(1,4,4,2),
+        xlim=c(2015,2020), type="o")
+abline(v=2015:2020,lty=3,col=4)
+```
+Medidas de error
+
+```{r}
+pre=predict(modEClin2,n.ahead = 12,newxreg=data.frame(vEa2,vTD2))
+pr = exp(pre$pred)
+obs=window(ser,start=2018)
+
+(RMSE3=sqrt(mean((obs-pr)^2)))
+(MAE3=mean(abs(obs-pr)))
+(RMSPE3=sqrt(mean(((obs-pr)/obs)^2)))
+(MAPE3=mean(abs(obs-pr)/obs))
+
+(CI3=mean(ul-ll))
+```
+Errores más grandes que las anteriores predicciones
+
+Resultados 
+
+```{r}
+res=data.frame(
+        par=c(length(coef(mod1)),length(coef(modEC)),length(coef(modEClin))+nrow(mod.atip$atip)),
+        sigma2=c(mod1$sigma2,modEC$sigma2,modEClin$sigma2),
+        AIC=c(AIC1,AIC2,AIC3),
+        BIC=c(BIC1,BIC2,BIC3),
+        RMSE=c(RMSE1,RMSE2,RMSE3),
+        MAE=c(MAE1,MAE2,MAE3),
+        RMSPE=c(RMSPE1,RMSPE2,RMSPE3),
+        MAPE=c(MAPE1,MAPE2,MAPE3),
+        CIml=c(CI1,CI2,CI3)
+        )
+row.names(res)=c("ARIMA","ARIMA+EC","ARIMA+EC+OutTreat")
+res
+```
+
+
